@@ -11,6 +11,7 @@ import csv
 import json
 import os
 import time
+import urllib.parse
 from datetime import datetime
 import pytz
 import numpy as np
@@ -21,11 +22,13 @@ from astropy.time import Time
 from timezonefinder import TimezoneFinder
 from astroquery.simbad import Simbad
 from astropy.coordinates import SkyCoord
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QTextEdit, QFormLayout, QMessageBox,
                              QTableWidget, QTableWidgetItem, QComboBox, QLabel, QDialog, 
-                             QListWidget)
+                             QListWidget, QAbstractItemView, QHeaderView, QCheckBox, QTabWidget,
+                             QTextBrowser, QFileDialog)
 
 # Mapping of SIMBAD O-types to human-readable descriptions
 # Source: https://simbad.cds.unistra.fr/guide/otypes.htx
@@ -225,11 +228,12 @@ class NumericTableWidgetItem(QTableWidgetItem):
     def __init__(self, text, sort_value=None):
         super().__init__(text)
         self.sort_value = sort_value
+        self.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
     def __lt__(self, other):
         if (getattr(self, 'sort_value', None) is not None and 
             getattr(other, 'sort_value', None) is not None):
-            return self.sort_value < other.sort_value
+            return bool(self.sort_value < other.sort_value)
 
         try:
             return float(self.text()) < float(other.text())
@@ -335,6 +339,220 @@ class LocationManagerDialog(QDialog):
         self.loc_list.clear()
         self.loc_list.addItems(sorted(self.parent_window.locations.keys()))
 
+class AliasesDialog(QDialog):
+    def __init__(self, object_name, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Aliases: {object_name}")
+        self.resize(400, 500)
+        
+        layout = QVBoxLayout(self)
+        
+        self.info_label = QLabel(f"Fetching aliases for {object_name}...")
+        layout.addWidget(self.info_label)
+        
+        self.text_browser = QTextBrowser()
+        self.text_browser.setOpenExternalLinks(True)
+        self.text_browser.setStyleSheet("""
+            QTextBrowser {
+                background-color: #2b2b35;
+                color: #ffffff;
+                font-size: 13px;
+                border: 1px solid #444444;
+            }
+        """)
+        layout.addWidget(self.text_browser)
+        
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.accept)
+        layout.addWidget(self.close_btn)
+        
+        self.fetch_aliases(object_name)
+
+    def fetch_aliases(self, name):
+        QApplication.processEvents()
+        try:
+            s = Simbad()
+            s.ROW_LIMIT = 0
+            table = s.query_objectids(name)
+            
+            if table:
+                html_content = ""
+                for row in table:
+                    val = row[0]
+                    if isinstance(val, bytes): val = val.decode('utf-8')
+                    alias = ' '.join(str(val).split())
+                    encoded_alias = urllib.parse.quote_plus(alias)
+                    url = f"https://en.wikipedia.org/w/index.php?search={encoded_alias}"
+                    html_content += f'<a href="{url}" style="color: #add8e6; font-family: Courier;">{alias}</a><br>'
+                self.text_browser.setHtml(html_content)
+                self.info_label.setText(f"Found {len(table)} aliases for {name}:")
+            else:
+                self.info_label.setText(f"No aliases found for {name}.")
+        except Exception as e:
+            self.info_label.setText(f"Error: {str(e)}")
+
+class SaveListDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Save to List")
+        self.resize(300, 100)
+        self.list_name = None
+        
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Enter name for new list or select existing:"))
+        
+        self.combo = QComboBox()
+        self.combo.setEditable(True)
+        
+        # Load existing names
+        if os.path.exists('adastra_lists.json'):
+            try:
+                with open('adastra_lists.json', 'r') as f:
+                    data = json.load(f)
+                    self.combo.addItems(sorted(data.keys()))
+            except:
+                pass
+        
+        layout.addWidget(self.combo)
+        
+        btn_layout = QHBoxLayout()
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.save)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        
+        btn_layout.addWidget(save_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+    def save(self):
+        text = self.combo.currentText().strip()
+        if text:
+            self.list_name = text
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Error", "List name cannot be empty")
+
+class ListManagerDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Manage Lists")
+        self.resize(900, 500)
+        self.lists_data = {}
+        self.current_list_name = None
+        
+        self.load_data()
+        
+        layout = QHBoxLayout(self)
+        
+        # Left side: Lists
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.addWidget(QLabel("Saved Lists:"))
+        self.list_widget = QListWidget()
+        self.list_widget.itemClicked.connect(self.on_list_selected)
+        left_layout.addWidget(self.list_widget)
+        
+        self.del_list_btn = QPushButton("Delete List")
+        self.del_list_btn.clicked.connect(self.delete_list)
+        left_layout.addWidget(self.del_list_btn)
+        
+        layout.addWidget(left_widget, 1)
+        
+        # Right side: Contents
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.addWidget(QLabel("List Contents:"))
+        self.table = QTableWidget()
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(["Name", "Type", "RA", "Dec", "Observable", "Mag"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.setStyleSheet("""
+            QTableWidget {
+                background-color: #2b2b35;
+                alternate-background-color: #9598b8;
+                color: #ffffff;
+                border: 1px solid #444444;
+                font-size: 13px;
+            }
+            QHeaderView::section {
+                background-color: #1a1a24;
+                color: #ffffff;
+                padding: 8px;
+                border: none;
+                font-weight: bold;
+            }
+            QTableWidget::item {
+                padding: 6px;
+                border-bottom: 1px solid #444444;
+            }
+        """)
+        right_layout.addWidget(self.table)
+        
+        self.del_item_btn = QPushButton("Remove Item from List")
+        self.del_item_btn.clicked.connect(self.delete_item)
+        right_layout.addWidget(self.del_item_btn)
+        
+        layout.addWidget(right_widget, 2)
+        
+        self.refresh_lists()
+
+    def load_data(self):
+        if os.path.exists('adastra_lists.json'):
+            try:
+                with open('adastra_lists.json', 'r') as f:
+                    self.lists_data = json.load(f)
+            except:
+                self.lists_data = {}
+
+    def save_data(self):
+        with open('adastra_lists.json', 'w') as f:
+            json.dump(self.lists_data, f, indent=4)
+
+    def refresh_lists(self):
+        self.list_widget.clear()
+        self.list_widget.addItems(sorted(self.lists_data.keys()))
+        self.table.setRowCount(0)
+        self.current_list_name = None
+
+    def on_list_selected(self, item):
+        self.current_list_name = item.text()
+        self.refresh_table()
+
+    def refresh_table(self):
+        self.table.setRowCount(0)
+        if self.current_list_name and self.current_list_name in self.lists_data:
+            items = self.lists_data[self.current_list_name]
+            self.table.setRowCount(len(items))
+            for i, item_data in enumerate(items):
+                self.table.setItem(i, 0, QTableWidgetItem(item_data.get("Name", "")))
+                self.table.setItem(i, 1, QTableWidgetItem(item_data.get("Type", "")))
+                self.table.setItem(i, 2, QTableWidgetItem(item_data.get("RA", "")))
+                self.table.setItem(i, 3, QTableWidgetItem(item_data.get("Dec", "")))
+                self.table.setItem(i, 4, QTableWidgetItem(item_data.get("Observable", "")))
+                self.table.setItem(i, 5, QTableWidgetItem(item_data.get("Mag", "")))
+
+    def delete_list(self):
+        if not self.current_list_name: return
+        reply = QMessageBox.question(self, "Confirm", f"Delete list '{self.current_list_name}'?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            del self.lists_data[self.current_list_name]
+            self.save_data()
+            self.refresh_lists()
+
+    def delete_item(self):
+        if not self.current_list_name: return
+        row = self.table.currentRow()
+        if row < 0: return
+        
+        items = self.lists_data[self.current_list_name]
+        del items[row]
+        self.lists_data[self.current_list_name] = items
+        self.save_data()
+        self.refresh_table()
+
 class AdAstraWindow(QMainWindow):
     def __init__(self):
         """
@@ -351,10 +569,13 @@ class AdAstraWindow(QMainWindow):
         # Set window icon (requires 'icon.png' in the same directory)
         self.setWindowIcon(QIcon('icon.png'))
 
-        # Main widget
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout(central_widget)
+        # Main Tab Widget
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
+
+        # --- Tab 1: Observable Objects ---
+        self.observable_tab = QWidget()
+        main_layout = QHBoxLayout(self.observable_tab)
 
         # Left Container
         left_widget = QWidget()
@@ -391,53 +612,105 @@ class AdAstraWindow(QMainWindow):
         form_layout.addRow("Start Time:", self.time_begin_edit)
 
         self.horizon_edit = QLineEdit()
+        self.horizon_edit.setText("0")
         form_layout.addRow("Horizon Limit (deg):", self.horizon_edit)
 
         self.mag_edit = QLineEdit()
         self.mag_edit.setPlaceholderText("e.g. 6.0 (default)")
         form_layout.addRow("Limiting Magnitude:", self.mag_edit)
 
-        self.temp_edit = QLineEdit()
-        self.temp_edit.setPlaceholderText("Optional (C)")
-        form_layout.addRow("Temperature (C):", self.temp_edit)
-
-        self.press_edit = QLineEdit()
-        self.press_edit.setPlaceholderText("Optional (mbar)")
-        form_layout.addRow("Pressure (mbar):", self.press_edit)
-
-        self.hum_edit = QLineEdit()
-        self.hum_edit.setPlaceholderText("Optional (%)")
-        form_layout.addRow("Humidity (%):", self.hum_edit)
-
         left_layout.addLayout(form_layout)
+        
+        # Object Type Filters
+        self.star_check = QCheckBox("Stars")
+        self.galaxy_check = QCheckBox("Galaxies")
+        self.nebula_check = QCheckBox("Nebulae")
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(self.star_check)
+        filter_layout.addWidget(self.galaxy_check)
+        filter_layout.addWidget(self.nebula_check)
+        left_layout.addLayout(filter_layout)
 
         # Action Button
-        self.create_btn = QPushButton("Create Location")
-        self.create_btn.clicked.connect(self.toggle_observer_state)
-        left_layout.addWidget(self.create_btn)
-
         self.check_btn = QPushButton("Check Observable Objects")
         self.check_btn.clicked.connect(self.check_observability)
-        self.check_btn.setVisible(False)
         left_layout.addWidget(self.check_btn)
 
         left_layout.addStretch()
         main_layout.addWidget(left_widget, 1)
 
-        # Right Container (Table)
+        # Right Container (Table + Button)
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        
         self.results_table = QTableWidget()
-        self.results_table.setColumnCount(6)
-        self.results_table.setHorizontalHeaderLabels(["Name", "Type", "RA", "Dec", "Duration", "Mag"])
+        self.results_table.setColumnCount(7)
+        self.results_table.setHorizontalHeaderLabels(["", "Name", "Type", "RA", "Dec", "Observable", "Mag"])
+        
+        for i in range(self.results_table.columnCount()):
+            self.results_table.horizontalHeaderItem(i).setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # Web-style Table Formatting
+        self.results_table.setAlternatingRowColors(True)
+        self.results_table.setShowGrid(False)
+        self.results_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.results_table.verticalHeader().setVisible(False)
+        self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        
+        self.results_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #2b2b35;
+                alternate-background-color: #9598b8;
+                color: #ffffff;
+                border: 1px solid #444444;
+                font-size: 13px;
+            }
+            QHeaderView::section {
+                background-color: #1a1a24;
+                color: #ffffff;
+                padding: 8px;
+                border: none;
+                font-weight: bold;
+            }
+            QTableWidget::item {
+                padding: 6px;
+                border-bottom: 1px solid #444444;
+            }
+            QTableWidget::item:selected {
+                background-color: #5a5a8a;
+                color: white;
+            }
+        """)
         
         # Add tooltips to headers to explain columns
-        self.results_table.horizontalHeaderItem(0).setToolTip("Primary Identifier")
-        self.results_table.horizontalHeaderItem(1).setToolTip("Object Classification")
-        self.results_table.horizontalHeaderItem(2).setToolTip("Right Ascension (ICRS)")
-        self.results_table.horizontalHeaderItem(3).setToolTip("Declination (ICRS)")
-        self.results_table.horizontalHeaderItem(4).setToolTip("Duration of visibility above horizon during observation window")
-        self.results_table.horizontalHeaderItem(5).setToolTip("Visual Magnitude (Lower is brighter)")
+        self.results_table.horizontalHeaderItem(0).setToolTip("Select to save")
+        self.results_table.horizontalHeaderItem(1).setToolTip("Primary Identifier")
+        self.results_table.horizontalHeaderItem(2).setToolTip("Object Classification")
+        self.results_table.horizontalHeaderItem(3).setToolTip("Right Ascension (ICRS)")
+        self.results_table.horizontalHeaderItem(4).setToolTip("Declination (ICRS)")
+        self.results_table.horizontalHeaderItem(5).setToolTip("Time range when object is visible (Local Time)")
+        self.results_table.horizontalHeaderItem(6).setToolTip("Visual Magnitude (Lower is brighter)")
         
-        main_layout.addWidget(self.results_table, 2)
+        right_layout.addWidget(self.results_table)
+        
+        btns_layout = QHBoxLayout()
+        self.save_list_btn = QPushButton("Save Checked Items to List")
+        self.save_list_btn.clicked.connect(self.save_checked_items)
+        btns_layout.addWidget(self.save_list_btn)
+        self.manage_lists_btn = QPushButton("Manage Lists")
+        self.manage_lists_btn.clicked.connect(self.open_list_manager)
+        btns_layout.addWidget(self.manage_lists_btn)
+        right_layout.addLayout(btns_layout)
+        
+        main_layout.addWidget(right_widget, 2)
+
+        self.tabs.addTab(self.observable_tab, "Observable Objects")
+
+        # --- Tab 2: Object Deep Dive ---
+        self.deep_dive_tab = QWidget()
+        deep_dive_layout = QVBoxLayout(self.deep_dive_tab)
+        deep_dive_layout.addWidget(QLabel("Object Deep Dive functionality coming soon."))
+        self.tabs.addTab(self.deep_dive_tab, "Object Deep Dive")
 
         # Load initial config
         self.load_data()
@@ -484,6 +757,18 @@ class AdAstraWindow(QMainWindow):
                 
                 # Restore times
                 self.time_begin_edit.setText(data.get('last_start_time', ''))
+                
+                # Restore window geometry
+                if 'window_geometry' in data:
+                    self.restoreGeometry(bytes.fromhex(data['window_geometry']))
+                
+                # Restore column widths
+                if 'column_widths' in data:
+                    widths = data['column_widths']
+                    for i, w in enumerate(widths):
+                        if i < self.results_table.columnCount():
+                            self.results_table.setColumnWidth(i, w)
+
                 self.log("Loaded saved locations and session data.")
 
         except Exception as e:
@@ -492,16 +777,72 @@ class AdAstraWindow(QMainWindow):
     def save_data(self):
         """Saves all locations and session data to adastra_data.json."""
         try:
+            col_widths = [self.results_table.columnWidth(i) for i in range(self.results_table.columnCount())]
+            
             data = {
                 'last_used_location': self.location_combo.currentText(),
                 'last_start_time': self.time_begin_edit.text(),
-                'locations': self.locations
+                'locations': self.locations,
+                'window_geometry': self.saveGeometry().toHex().data().decode(),
+                'column_widths': col_widths
             }
             with open('adastra_data.json', 'w') as f:
                 json.dump(data, f, indent=4)
             self.log("Saved locations and session data.")
         except Exception as e:
             self.log(f"Could not save data: {e}")
+
+    def closeEvent(self, event):
+        self.save_data()
+        event.accept()
+        
+    def save_checked_items(self):
+        """Saves checked items from the results table to a JSON list."""
+        checked_rows = []
+        for row in range(self.results_table.rowCount()):
+            item = self.results_table.item(row, 0)
+            if item and item.checkState() == Qt.CheckState.Checked:
+                # Gather data (Name is in col 1, Type in col 2, etc.)
+                name_item = self.results_table.item(row, 1)
+                name = name_item.sort_value if hasattr(name_item, 'sort_value') else "Unknown"
+                
+                type_ = self.results_table.item(row, 2).text()
+                ra = self.results_table.item(row, 3).text()
+                dec = self.results_table.item(row, 4).text()
+                obs = self.results_table.item(row, 5).text()
+                mag = self.results_table.item(row, 6).text()
+                
+                checked_rows.append({
+                    "Name": name, "Type": type_, "RA": ra, "Dec": dec,
+                    "Observable": obs, "Mag": mag
+                })
+        
+        if not checked_rows:
+            QMessageBox.information(self, "Info", "No items checked.")
+            return
+
+        dialog = SaveListDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            list_name = dialog.list_name
+            lists_data = {}
+            if os.path.exists('adastra_lists.json'):
+                try:
+                    with open('adastra_lists.json', 'r') as f:
+                        lists_data = json.load(f)
+                except:
+                    pass
+            
+            if list_name in lists_data:
+                lists_data[list_name].extend(checked_rows)
+            else:
+                lists_data[list_name] = checked_rows
+            
+            try:
+                with open('adastra_lists.json', 'w') as f:
+                    json.dump(lists_data, f, indent=4)
+                self.log(f"Saved {len(checked_rows)} items to list '{list_name}'")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not save list: {e}")
 
     def on_location_change(self, index):
         """Updates the Lat/Lon/Elev fields when a new location is selected."""
@@ -520,6 +861,14 @@ class AdAstraWindow(QMainWindow):
         dialog = LocationManagerDialog(self)
         dialog.exec()
 
+    def show_aliases(self, object_name):
+        dialog = AliasesDialog(object_name, self)
+        dialog.exec()
+
+    def open_list_manager(self):
+        dialog = ListManagerDialog(self)
+        dialog.exec()
+
     def refresh_locations(self):
         current = self.location_combo.currentText()
         self.location_combo.blockSignals(True)
@@ -534,31 +883,6 @@ class AdAstraWindow(QMainWindow):
         """Helper to print to console and update the GUI status bar."""
         print(message)
         self.statusBar().showMessage(message)
-
-    def toggle_observer_state(self):
-        """Toggles between Setup mode (inputs enabled) and Ready mode (inputs disabled)."""
-        if self.check_btn.isVisible():
-            # Currently in Ready mode -> Switch to Setup
-            self.set_inputs_enabled(True)
-            self.check_btn.setVisible(False)
-            self.create_btn.setText("Update Observer")
-        else:
-            # Currently in Setup mode -> Switch to Ready
-            if self.create_observer():
-                self.set_inputs_enabled(False)
-                self.check_btn.setVisible(True)
-                self.create_btn.setText("Change Settings")
-
-    def set_inputs_enabled(self, enabled):
-        """Enables or disables configuration inputs."""
-        widgets = [
-            self.location_combo, self.new_loc_btn,
-            self.time_begin_edit,
-            self.horizon_edit, self.mag_edit,
-            self.temp_edit, self.press_edit, self.hum_edit
-        ]
-        for w in widgets:
-            w.setEnabled(enabled)
 
     def create_observer(self):
         """
@@ -583,10 +907,6 @@ class AdAstraWindow(QMainWindow):
             # Create the Observer object
             self.observer = astroplan.Observer(latitude=lat, longitude=lon, elevation=elev, name=name, timezone=timezone_str)
 
-            if self.temp_edit.text(): self.observer.temperature = float(self.temp_edit.text()) * u.deg_C
-            if self.press_edit.text(): self.observer.pressure = float(self.press_edit.text()) * u.mbar
-            if self.hum_edit.text(): self.observer.relative_humidity = float(self.hum_edit.text()) / 100.0
-
             self.log(f"\nObserver Created: {self.observer.name}\nLocation: {self.observer.location}\nTimezone: {self.observer.timezone}")
             if self.time_begin_edit.text(): self.log(f"Start: {self.time_begin_edit.text()}")
             return True
@@ -601,8 +921,7 @@ class AdAstraWindow(QMainWindow):
         1. Generates a grid of Alt/Az points representing the local sky.
         2. Queries SIMBAD for objects around those points that meet magnitude criteria.
         """
-        if not hasattr(self, 'observer'):
-            QMessageBox.warning(self, "Warning", "Please create an observer first.")
+        if not self.create_observer():
             return
 
         # Get Time
@@ -635,6 +954,12 @@ class AdAstraWindow(QMainWindow):
             if self.mag_edit.text():
                 mag_limit = float(self.mag_edit.text())
             
+            # Get Filter States
+            show_stars = self.star_check.isChecked()
+            show_galaxies = self.galaxy_check.isChecked()
+            show_nebulae = self.nebula_check.isChecked()
+            filter_active = show_stars or show_galaxies or show_nebulae
+
             # Save all current settings for the next session
             self.save_data()
 
@@ -652,12 +977,36 @@ class AdAstraWindow(QMainWindow):
             # Generate grid points (Alt/Az)
             grid_coords = []
             step = 15 # Step size in degrees for the grid
-            for alt in range(int(alt_min), 90, step):
-                for az in range(0, 360, step):
-                    # Convert local AltAz coordinates to Celestial ICRS (RA/Dec) at the specific start time
-                    c = SkyCoord(alt=alt*u.deg, az=az*u.deg, frame='altaz', 
-                                 obstime=t_start, location=self.observer.location)
-                    grid_coords.append(c.transform_to('icrs'))
+            
+            def get_grid(time_obj):
+                coords = []
+                for alt in range(int(alt_min), 90, step):
+                    for az in range(0, 360, step):
+                        c = SkyCoord(alt=alt*u.deg, az=az*u.deg, frame='altaz', 
+                                     obstime=time_obj, location=self.observer.location)
+                        coords.append(c.transform_to('icrs'))
+                return coords
+
+            # 1. Grid at Start Time (Current Sky)
+            grid_coords.extend(get_grid(t_start))
+            
+            # 2. Grid at End Time (Future Sky - captures objects rising during the night)
+            if (t_end - t_start).to(u.hour).value > 1.0:
+                grid_coords.extend(get_grid(t_end))
+            
+            # Filter duplicates/overlapping regions to optimize query count
+            # If a new point is within 10 degrees (cone radius) of an existing point, skip it.
+            final_grid = []
+            if grid_coords:
+                final_grid.append(grid_coords[0])
+                for c in grid_coords[1:]:
+                    # Check separation from existing points
+                    # Create catalog from RA/Dec to avoid frame mismatch errors (due to different obstimes)
+                    catalog = SkyCoord([x.ra for x in final_grid], [x.dec for x in final_grid], frame='icrs')
+                    if c.separation(catalog).min() > 10 * u.deg:
+                        final_grid.append(c)
+            
+            grid_coords = final_grid
 
             self.log(f"Starting SIMBAD grid search ({len(grid_coords)} queries)...")
             self.log("Scanning region >10 deg above horizon. Please wait...")
@@ -712,6 +1061,20 @@ class AdAstraWindow(QMainWindow):
                                 otype = OTYPE_MAP.get(otype, otype) # Convert to human readable
                                 mag = float(row['flux'])
                                 
+                                # Apply Type Filters
+                                if filter_active:
+                                    is_star = any(k in otype for k in ["Star", "Binary", "Dwarf", "Giant", "Supergiant", "Pulsar", "Nova", "Variable", "Stellar"])
+                                    is_galaxy = any(k in otype for k in ["Galaxy", "Galaxies", "Quasar", "Blazar", "BL Lac", "AGN"])
+                                    is_nebula = any(k in otype for k in ["Nebula", "Cloud", "Remnant", "Region", "Bubble", "Globule", "Filament", "Shell"])
+                                    
+                                    keep = False
+                                    if show_stars and is_star: keep = True
+                                    if show_galaxies and is_galaxy: keep = True
+                                    if show_nebulae and is_nebula: keep = True
+                                    
+                                    if not keep:
+                                        continue
+                                
                                 unique_objects[name] = {
                                     'name': name,
                                     'type': otype,
@@ -733,56 +1096,99 @@ class AdAstraWindow(QMainWindow):
             self.results_table.setSortingEnabled(False)
             self.results_table.setRowCount(0)
 
-            # Calculate visibility duration for all objects
-            objects_list = list(unique_objects.values())
-            targets = [obj['target'] for obj in objects_list]
-            duration_data = []
-
-            if targets and t_end > t_start:
-                try:
-                    time_step_mins = 5
-                    time_step = time_step_mins * u.min
-                    delta_time = (t_end - t_start).to(u.min).value
-                    n_steps = int(delta_time / time_step_mins) + 1
-                    time_grid = t_start + (np.arange(n_steps) * time_step)
-                    
-                    altaz_grid = self.observer.altaz(time_grid, targets, grid_times_targets=True)
-                    is_above_horizon = altaz_grid.alt > (horizon * u.deg)
-                    
-                    # Since t_end is fixed to Nautical Dawn, we don't need to filter for night again.
-                    is_visible = is_above_horizon
-                    
-                    visible_counts = np.sum(is_visible, axis=1)
-                    
-                    for count in visible_counts:
-                        mins_total = int(count * time_step_mins)
-                        h = mins_total // 60
-                        m = mins_total % 60
-                        duration_data.append((f"{h}h {m}m", mins_total))
-                except Exception as e:
-                    print(f"Duration calculation error: {e}", file=sys.stderr)
-                    self.log(f"Duration calculation failed: {e}")
-                    duration_data = [("-", 0)] * len(targets)
+            # Pre-calculate window start for time range logic
+            # If start time is already night, use it. Otherwise wait for nautical dusk.
+            is_night_start = self.observer.is_night(t_start, horizon=-12*u.deg)
+            if is_night_start:
+                window_start = t_start
             else:
-                duration_data = [("-", 0)] * len(targets)
+                window_start = self.observer.twilight_evening_nautical(t_start, which='next')
+                if window_start > t_end:
+                    window_start = t_end
+            
+            tz_obj = tz
 
+            objects_list = list(unique_objects.values())
             for i, obj in enumerate(objects_list):
-                duration_str, duration_mins = duration_data[i]
                 
+                # Calculate Time Range
+                range_str = "-"
+                range_sort = 9999999.0
+                
+                if window_start < t_end:
+                    try:
+                        target = obj['target']
+                        h_quant = horizon * u.deg
+                        
+                        # Check if object is up at the start of the effective window
+                        is_up = self.observer.target_is_up(window_start, target, horizon=h_quant)
+                        
+                        s_time = None
+                        e_time = None
+                        
+                        if is_up:
+                            s_time = window_start
+                            try:
+                                # Find next set time
+                                next_set = self.observer.target_set_time(window_start, target, which='next', horizon=h_quant)
+                                e_time = min(next_set, t_end)
+                            except (astroplan.TargetAlwaysUp, astroplan.TargetNeverUp):
+                                e_time = t_end
+                        else:
+                            try:
+                                # Find next rise time
+                                next_rise = self.observer.target_rise_time(window_start, target, which='next', horizon=h_quant)
+                                if next_rise < t_end:
+                                    s_time = next_rise
+                                    try:
+                                        # Find set time after rise
+                                        next_set = self.observer.target_set_time(next_rise, target, which='next', horizon=h_quant)
+                                        e_time = min(next_set, t_end)
+                                    except (astroplan.TargetAlwaysUp, astroplan.TargetNeverUp):
+                                        e_time = t_end
+                            except (astroplan.TargetAlwaysUp, astroplan.TargetNeverUp):
+                                pass
+                        
+                        if s_time and e_time:
+                            s_dt = s_time.to_datetime(timezone=tz_obj)
+                            e_dt = e_time.to_datetime(timezone=tz_obj)
+                            range_str = f"{s_dt.strftime('%H:%M')} - {e_dt.strftime('%H:%M')}"
+                            range_sort = s_time.jd
+                    except Exception:
+                        pass
+
                 row = self.results_table.rowCount()
                 self.results_table.insertRow(row)
-                self.results_table.setItem(row, 0, QTableWidgetItem(obj['name']))
-                self.results_table.setItem(row, 1, QTableWidgetItem(obj['type']))
+                
+                # Checkbox
+                check_item = QTableWidgetItem()
+                check_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                check_item.setCheckState(Qt.CheckState.Unchecked)
+                self.results_table.setItem(row, 0, check_item)
+                
+                self.results_table.setItem(row, 1, NumericTableWidgetItem("", sort_value=obj['name']))
+                link_label = QLabel(f'{obj["name"]}<br><a href="{obj["name"]}" style="font-family: Courier; color: #add8e6;">Show Aliases</a>')
+                link_label.setOpenExternalLinks(False)
+                link_label.linkActivated.connect(self.show_aliases)
+                link_label.setStyleSheet("background-color: transparent; color: white;")
+                link_label.setMinimumHeight(50)
+                link_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.results_table.setCellWidget(row, 1, link_label)
+                
+                type_item = QTableWidgetItem(obj['type'])
+                type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.results_table.setItem(row, 2, type_item)
                 
                 ra_str = obj['target'].coord.ra.to_string(unit=u.hour, sep=('h', 'm', 's'), precision=1, pad=True)
                 dec_str = obj['target'].coord.dec.to_string(unit=u.deg, sep=('d', 'm', 's'), precision=1, alwayssign=True, pad=True)
                 
-                self.results_table.setItem(row, 2, NumericTableWidgetItem(ra_str, sort_value=obj['ra']))
-                self.results_table.setItem(row, 3, NumericTableWidgetItem(dec_str, sort_value=obj['dec']))
-                self.results_table.setItem(row, 4, NumericTableWidgetItem(duration_str, sort_value=duration_mins))
-                self.results_table.setItem(row, 5, NumericTableWidgetItem(f"{obj['mag']:.2f}"))
+                self.results_table.setItem(row, 3, NumericTableWidgetItem(ra_str, sort_value=obj['ra']))
+                self.results_table.setItem(row, 4, NumericTableWidgetItem(dec_str, sort_value=obj['dec']))
+                self.results_table.setItem(row, 5, NumericTableWidgetItem(range_str, sort_value=range_sort))
+                self.results_table.setItem(row, 6, NumericTableWidgetItem(f"{obj['mag']:.2f}"))
             
             self.results_table.setSortingEnabled(True)
+            self.results_table.resizeRowsToContents()
             self.log(f"Found {len(unique_objects)} visible objects.")
 
         except Exception as e:
