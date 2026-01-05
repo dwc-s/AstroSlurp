@@ -1,0 +1,96 @@
+/* Ad Astra Stylesheet */
+
+/* ---- General Window ---- */
+QMainWindow, QDialog {
+    background-color: #3c3f41; /* Dark gray background */
+    color: #f0f0f0; /* Light text */
+}
+
+/* ---- Buttons ---- */
+QPushButton {
+    background-color: #5a5a8a;
+    color: white;
+    border: 1px solid #4a4a7a;
+    padding: 8px;
+    border-radius: 4px;
+}
+QPushButton:hover {
+    background-color: #6a6a9a;
+}
+QPushButton:pressed {
+    background-color: #4a4a7a;
+}
+
+/* ---- Input Fields ---- */
+QLineEdit, QComboBox {
+    padding: 5px;
+    border: 1px solid #555;
+    border-radius: 4px;
+    background-color: #2b2b35;
+    color: #f0f0f0;
+}
+QComboBox::drop-down {
+    border: none;
+}
+QComboBox::down-arrow {
+    image: url(icon.png); /* Replace with a proper down-arrow icon if you have one */
+    width: 14px;
+    height: 14px;
+}
+
+/* ---- Labels ---- */
+QLabel {
+    color: #f0f0f0;
+    padding: 2px;
+}
+
+/* ---- Tables ---- */
+QTableWidget {
+    background-color: #2b2b35;
+    alternate-background-color: #3c3f41;
+    color: #ffffff;
+    border: 1px solid #444444;
+    font-size: 13px;
+    gridline-color: #444;
+}
+QHeaderView::section {
+    background-color: #1a1a24;
+    color: #ffffff;
+    padding: 8px;
+    border: none;
+    font-weight: bold;
+}
+QTableWidget::item {
+    padding: 6px;
+    border-bottom: 1px solid #444444;
+}
+QTableWidget::item:selected {
+    background-color: #5a5a8a;
+    color: white;
+}
+
+/* ---- Text Browser (for Aliases) ---- */
+QTextBrowser {
+    background-color: #2b2b35;
+    color: #ffffff;
+    font-size: 13px;
+    border: 1px solid #444444;
+}
+
+/* ---- Specific Dialogs/Widgets ---- */
+#GasMapDialog, #GasMapFigure {
+    background-color: #2b2b35;
+}
+
+#ResultsLink {
+    background-color: transparent;
+    color: white;
+}
+#ResultsLink a {
+    color: #add8e6;
+    font-family: Courier;
+}
+
+QScrollArea {
+    border: none;
+}

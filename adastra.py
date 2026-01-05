@@ -21,6 +21,11 @@ from astroplan import FixedTarget, AltitudeConstraint, AtNightConstraint
 from astropy.time import Time
 from timezonefinder import TimezoneFinder
 from astroquery.simbad import Simbad
+from astroquery.hips2fits import hips2fits
+from astropy.visualization import simple_norm
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
+from matplotlib.colors import Normalize
 from astropy.coordinates import SkyCoord
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
@@ -29,6 +34,16 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QTableWidget, QTableWidgetItem, QComboBox, QLabel, QDialog, 
                              QListWidget, QAbstractItemView, QHeaderView, QCheckBox, QTabWidget,
                              QTextBrowser, QFileDialog, QScrollArea)
+import warnings
+from astropy.utils.exceptions import AstropyWarning
+
+# --- Style Configuration ---
+# This color is used for text within Matplotlib plots, which is not controlled by the CSS file.
+PLOT_TEXT_COLOR = 'white'
+
+# Suppress specific Astropy warnings
+warnings.filterwarnings('ignore', category=AstropyWarning, append=True)
+warnings.filterwarnings('ignore', message='.*ERFA function "dtf2d" yielded.*')
 
 # Mapping of SIMBAD O-types to human-readable descriptions
 # Source: https://simbad.cds.unistra.fr/guide/otypes.htx
@@ -240,6 +255,45 @@ class NumericTableWidgetItem(QTableWidgetItem):
         except ValueError:
             return super().__lt__(other)
 
+class GasMapDialog(QDialog):
+    def __init__(self, object_name, images, survey_names, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Gas & Dust Density: {object_name}")
+        self.resize(1100, 600)
+        self.setObjectName("GasMapDialog")
+        layout = QVBoxLayout(self)
+        
+        self.figure = Figure(figsize=(10, 5))
+        self.figure.setObjectName("GasMapFigure")
+        self.canvas = FigureCanvasQTAgg(self.figure)
+        layout.addWidget(self.canvas)
+        
+        # Plotting
+        n = len(images)
+        if n > 0:
+            axes = self.figure.subplots(1, n)
+            if n == 1:
+                axes = [axes]
+        
+            for i, ax in enumerate(axes):
+                data = images[i][0].data
+                data = np.nan_to_num(data) # Handle NaNs to prevent plot errors
+                norm = simple_norm(data, 'sqrt', percent=99)
+                im = ax.imshow(data, origin='lower', cmap='inferno', norm=norm)
+                ax.set_title(f"{survey_names[i]} (Density/Opacity)", color=PLOT_TEXT_COLOR)
+                ax.axis('off')
+                self.figure.colorbar(im, ax=ax, orientation='horizontal', fraction=0.046, pad=0.04)
+                
+                # Add black dot at center to mark target location
+                h, w = data.shape
+                ax.plot(w / 2 - 0.5, h / 2 - 0.5, 'ko', markersize=4)
+        
+        self.figure.tight_layout()
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
 class LocationManagerDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -352,14 +406,6 @@ class AliasesDialog(QDialog):
         
         self.text_browser = QTextBrowser()
         self.text_browser.setOpenExternalLinks(True)
-        self.text_browser.setStyleSheet("""
-            QTextBrowser {
-                background-color: #2b2b35;
-                color: #ffffff;
-                font-size: 13px;
-                border: 1px solid #444444;
-            }
-        """)
         layout.addWidget(self.text_browser)
         
         self.close_btn = QPushButton("Close")
@@ -469,26 +515,6 @@ class ListManagerDialog(QDialog):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
-        self.table.setStyleSheet("""
-            QTableWidget {
-                background-color: #2b2b35;
-                alternate-background-color: #9598b8;
-                color: #ffffff;
-                border: 1px solid #444444;
-                font-size: 13px;
-            }
-            QHeaderView::section {
-                background-color: #1a1a24;
-                color: #ffffff;
-                padding: 8px;
-                border: none;
-                font-weight: bold;
-            }
-            QTableWidget::item {
-                padding: 6px;
-                border-bottom: 1px solid #444444;
-            }
-        """)
         right_layout.addWidget(self.table)
         
         self.del_item_btn = QPushButton("Remove Item from List")
@@ -562,6 +588,9 @@ class AdAstraWindow(QMainWindow):
         
         # In-memory store for location data
         self.locations = {}
+        
+        self.current_dd_coord = None
+        self.current_dd_name = None
 
         self.setWindowTitle("Ad Astra")
         self.resize(1000, 600)
@@ -657,31 +686,6 @@ class AdAstraWindow(QMainWindow):
         self.results_table.verticalHeader().setVisible(False)
         self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         
-        self.results_table.setStyleSheet("""
-            QTableWidget {
-                background-color: #2b2b35;
-                alternate-background-color: #9598b8;
-                color: #ffffff;
-                border: 1px solid #444444;
-                font-size: 13px;
-            }
-            QHeaderView::section {
-                background-color: #1a1a24;
-                color: #ffffff;
-                padding: 8px;
-                border: none;
-                font-weight: bold;
-            }
-            QTableWidget::item {
-                padding: 6px;
-                border-bottom: 1px solid #444444;
-            }
-            QTableWidget::item:selected {
-                background-color: #5a5a8a;
-                color: white;
-            }
-        """)
-        
         # Add tooltips to headers to explain columns
         self.results_table.horizontalHeaderItem(0).setToolTip("Select to save")
         self.results_table.horizontalHeaderItem(1).setToolTip("Primary Identifier")
@@ -714,7 +718,6 @@ class AdAstraWindow(QMainWindow):
         tab_layout = QVBoxLayout(self.deep_dive_tab)
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setStyleSheet("QScrollArea { border: none; }")
         tab_layout.addWidget(scroll_area)
         
         scroll_content = QWidget()
@@ -748,7 +751,6 @@ class AdAstraWindow(QMainWindow):
         self.dd_aliases_label = QLabel()
         self.dd_aliases_label.setWordWrap(True)
         self.dd_aliases_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
-        self.dd_aliases_label.setStyleSheet("font-size: 11px;")
         self.dd_type_label = QLabel()
         self.dd_coords_label = QLabel()
         self.dd_mag_label = QLabel()
@@ -779,8 +781,14 @@ class AdAstraWindow(QMainWindow):
         dd_btns_row2.addWidget(self.dd_surround_btn)
         dd_btns_row2.addWidget(self.dd_compare_btn)
         
+        dd_btns_row3 = QHBoxLayout()
+        self.dd_gas_btn = QPushButton("Check for Surrounding Gas")
+        self.dd_gas_btn.clicked.connect(self.find_surrounding_gas)
+        dd_btns_row3.addWidget(self.dd_gas_btn)
+        
         res_layout.addLayout(dd_btns_row1)
         res_layout.addLayout(dd_btns_row2)
+        res_layout.addLayout(dd_btns_row3)
         
         deep_dive_layout.addWidget(self.dd_results_widget)
         deep_dive_layout.addStretch()
@@ -1247,10 +1255,10 @@ class AdAstraWindow(QMainWindow):
                 self.results_table.setItem(row, 0, check_item)
                 
                 self.results_table.setItem(row, 1, NumericTableWidgetItem("", sort_value=obj['name']))
-                link_label = QLabel(f'{obj["name"]}<br><a href="{obj["name"]}" style="font-family: Courier; color: #add8e6;">Show Aliases</a>')
+                link_label = QLabel(f'{obj["name"]}<br><a href="{obj["name"]}">Show Aliases</a>')
+                link_label.setObjectName("ResultsLink")
                 link_label.setOpenExternalLinks(False)
                 link_label.linkActivated.connect(self.show_aliases)
-                link_label.setStyleSheet("background-color: transparent; color: white;")
                 link_label.setMinimumHeight(50)
                 link_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.results_table.setCellWidget(row, 1, link_label)
@@ -1293,12 +1301,17 @@ class AdAstraWindow(QMainWindow):
         QApplication.processEvents()
         
         try:
-            custom_simbad = Simbad()
-            # Update for deprecation: use 'V', 'ra', 'dec' instead of 'flux(V)', 'ra(d)', 'dec(d)'
-            custom_simbad.add_votable_fields('V', 'otype', 'ra', 'dec')
-            
-            # 1. Query Object Properties (Resolves any alias to the main object)
-            table = custom_simbad.query_object(name)
+            # 1. Query Object Properties
+            # Try extended query first (might trigger TAP check which can fail if service is down)
+            table = None
+            try:
+                custom_simbad = Simbad()
+                custom_simbad.add_votable_fields('V', 'otype', 'ra', 'dec')
+                table = custom_simbad.query_object(name)
+            except Exception as e:
+                self.log(f"Extended query failed ({e}), retrying with defaults...")
+                custom_simbad = Simbad() # Reset to defaults
+                table = custom_simbad.query_object(name)
             
             if table:
                 row = table[0]
@@ -1354,6 +1367,11 @@ class AdAstraWindow(QMainWindow):
                 
                 # Format Coordinates
                 coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+                
+                # Save for other actions
+                self.current_dd_coord = coord
+                self.current_dd_name = main_id
+                
                 ra_str = coord.ra.to_string(unit=u.hour, sep=('h', 'm', 's'), precision=1, pad=True)
                 dec_str = coord.dec.to_string(unit=u.deg, sep=('d', 'm', 's'), precision=1, alwayssign=True, pad=True)
                 
@@ -1364,7 +1382,12 @@ class AdAstraWindow(QMainWindow):
                 self.dd_mag_label.setText(mag)
                 
                 # 2. Query Aliases using the resolved MAIN_ID
-                ids_table = custom_simbad.query_objectids(main_id)
+                ids_table = None
+                try:
+                    ids_table = custom_simbad.query_objectids(main_id)
+                except Exception as e:
+                    self.log(f"Could not fetch aliases: {e}")
+
                 aliases_list = []
                 if ids_table:
                     for id_row in ids_table:
@@ -1385,6 +1408,69 @@ class AdAstraWindow(QMainWindow):
             self.log(f"Deep dive search error: {e}")
             QMessageBox.critical(self, "Error", f"Search failed: {e}")
 
+    def find_surrounding_gas(self):
+        if not self.current_dd_coord:
+            QMessageBox.warning(self, "Warning", "Please search for an object first.")
+            return
+        
+        self.log(f"Fetching Gas (HI) and Dust maps for {self.current_dd_name} via CDS HiPS...")
+        QApplication.processEvents()
+        
+        try:
+            # Define HiPS surveys
+            # HI4PI: Neutral Hydrogen Column Density (CDS/P/HI4PI/NH)
+            # AKARI/FIS: Far-Infrared Dust map (CDS/P/AKARI/FIS/N160)
+            surveys = [
+                {'id': 'CDS/P/HI4PI/NH', 'name': 'HI4PI (Hydrogen)'},
+                {'id': 'CDS/P/AKARI/FIS/N160', 'name': 'AKARI (Dust)'}
+            ]
+            
+            images = []
+            survey_names = []
+            
+            for survey in surveys:
+                try:
+                    self.log(f"Querying {survey['name']}...")
+                    QApplication.processEvents()
+                    result = hips2fits.query(
+                        hips=survey['id'],
+                        width=500, height=500,
+                        ra=self.current_dd_coord.ra, dec=self.current_dd_coord.dec,
+                        fov=2*u.deg, projection='TAN', format='fits'
+                    )
+                    if result:
+                        images.append(result)
+                        survey_names.append(survey['name'])
+                except Exception as e:
+                    self.log(f"Failed to fetch {survey['name']}: {e}")
+                    # Fallback for Dust if AKARI fails
+                    if 'AKARI' in survey['name']:
+                        try:
+                            self.log("Attempting fallback to Planck (Dust)...")
+                            QApplication.processEvents()
+                            result = hips2fits.query(
+                                hips='CDS/P/Planck/R2/HFI/857',
+                                width=500, height=500,
+                                ra=self.current_dd_coord.ra, dec=self.current_dd_coord.dec,
+                                fov=2*u.deg, projection='TAN', format='fits'
+                            )
+                            if result:
+                                images.append(result)
+                                survey_names.append('Planck (Dust)')
+                        except Exception as e2:
+                            self.log(f"Fallback failed: {e2}")
+
+            if not images:
+                raise ValueError("No image data returned from HiPS service.")
+
+            dialog = GasMapDialog(self.current_dd_name, images, survey_names, self)
+            dialog.exec()
+            self.log(f"Displayed gas/dust maps for {self.current_dd_name}.")
+
+        except Exception as e:
+            self.log(f"Error searching surrounding gas: {e}")
+            QMessageBox.critical(self, "Error", f"Search failed: {e}")
+
 if __name__ == "__main__":
     # Download IERS data (Earth rotation data) required for precise time/coordinate conversions
     print("Checking IERS data...")
@@ -1392,7 +1478,16 @@ if __name__ == "__main__":
         astroplan.download_IERS_A(show_progress=False)
     except:
         pass
+    
     app = QApplication(sys.argv)
+    
+    # Load external stylesheet
+    try:
+        with open('style.css', 'r') as f:
+            app.setStyleSheet(f.read())
+    except FileNotFoundError:
+        print("Warning: style.css not found. Using default styles.")
+
     app.setWindowIcon(QIcon('icon.png'))
     window = AdAstraWindow()
     window.show()
