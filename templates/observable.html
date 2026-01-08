@@ -1,0 +1,109 @@
+{% extends 'base.html' %}
+
+{% block title %}Observable Objects{% endblock %}
+
+{% block content %}
+<div class="form-container">
+  <form action="{{ url_for('search_observable') }}" method="post">
+    <h2>Find Observable Objects</h2>
+
+    <label for="latitude">Latitude (deg):</label>
+    <input type="number" id="latitude" name="latitude" value="42.46" step="any" required>
+
+    <label for="longitude">Longitude (deg):</label>
+    <input type="number" id="longitude" name="longitude" value="-72.5" step="any" required>
+
+    <label for="elevation">Elevation (m):</label>
+    <input type="number" id="elevation" name="elevation" value="128" step="any" required>
+
+    <label for="start_time">Start Time (Local):</label>
+    <input type="datetime-local" id="start_time" name="start_time" required>
+
+    <label for="mag_limit">Limiting Magnitude:</label>
+    <input type="number" id="mag_limit" name="mag_limit" value="6.0" step="0.1">
+
+    <label for="horizon_limit">Horizon Limit (deg):</label>
+    <input type="number" id="horizon_limit" name="horizon_limit" value="0" step="1">
+
+    <button type="submit">Search</button>
+  </form>
+</div>
+
+{% if results %}
+  <div class="results-section">
+    <h3>Found {{ results|length }} objects:</h3>
+
+    <div class="filter-box">
+      <strong>Filter by Type:</strong>
+      <label><input type="checkbox" class="type-filter" value="Star" checked> Stars</label>
+      <label><input type="checkbox" class="type-filter" value="Galaxy" checked> Galaxies</label>
+      <label><input type="checkbox" class="type-filter" value="Nebula" checked> Nebulae</label>
+      <label><input type="checkbox" class="type-filter" value="Cluster" checked> Clusters</label>
+      <label><input type="checkbox" class="type-filter" value="Other" checked> Other</label>
+    </div>
+
+    <table class="results-table" id="resultsTable">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>RA</th>
+          <th>Dec</th>
+          <th>Magnitude</th>
+          <th>Observable Time (Local)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for obj in results %}
+        <tr data-type="{{ obj.type }}">
+          <td><a href="{{ url_for('deep_dive_result', object_name=obj.name) }}">{{ obj.name }}</a></td>
+          <td>{{ obj.type }}</td>
+          <td>{{ obj.ra_str }}</td>
+          <td>{{ obj.dec_str }}</td>
+          <td>{{ obj.mag }}</td>
+          <td>{{ obj.observable_str }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      const checkboxes = document.querySelectorAll('.type-filter');
+      const table = document.getElementById('resultsTable');
+      const rows = table.getElementsByTagName('tr');
+
+      function filterResults() {
+        const activeTypes = [];
+        checkboxes.forEach(cb => {
+          if (cb.checked) activeTypes.push(cb.value);
+        });
+
+        // Skip header row (index 0)
+        for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+          const typeText = row.getAttribute('data-type') || "";
+
+          let show = false;
+
+          // Simple matching logic
+          if (typeText.includes('Star') && activeTypes.includes('Star')) show = true;
+          else if (typeText.includes('Galaxy') && activeTypes.includes('Galaxy')) show = true;
+          else if ((typeText.includes('Nebula') || typeText.includes('Remnant')) && activeTypes.includes('Nebula')) show = true;
+          else if (typeText.includes('Cluster') && activeTypes.includes('Cluster')) show = true;
+          else if (activeTypes.includes('Other') && !typeText.includes('Star') && !typeText.includes('Galaxy') && !typeText.includes('Nebula') && !typeText.includes('Cluster')) show = true;
+
+          row.style.display = show ? '' : 'none';
+        }
+      }
+
+      checkboxes.forEach(cb => cb.addEventListener('change', filterResults));
+    });
+  </script>
+{% endif %}
+
+{% if error %}
+  <p class="error">Error: {{ error }}</p>
+{% endif %}
+{% endblock %}

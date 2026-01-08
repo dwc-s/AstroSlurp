@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AstroSlurp - {% block title %}{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  </head>
+  <body class="{% block body_class %}{% endblock %}">
+    <div class="container">
+      <header>
+        <a href="{{ url_for('index') }}">
+          <img src="{{ url_for('static', filename='logo.png') }}" alt="AstroSlurp Logo" class="header-logo">
+        </a>
+      </header>
+      <hr>
+      {% block content %}{% endblock %}
+    </div>
+  </body>
+</html>

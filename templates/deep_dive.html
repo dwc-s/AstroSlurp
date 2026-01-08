@@ -1,0 +1,40 @@
+{% extends 'base.html' %}
+
+{% block title %}Deep Dive: {{ object.name }}{% endblock %}
+
+{% block content %}
+<div class="deep-dive-container">
+  <div class="info-panel">
+    <h2>
+      {{ object.name }}
+      {% if object.common_name %}
+        <span style="font-size: 0.8em; color: #ccc;">({{ object.common_name }})</span>
+      {% endif %}
+    </h2>
+
+    {% if object.aliases %}
+    <p class="aliases-text">
+      {{ object.aliases|join(', ') }}
+    </p>
+    {% endif %}
+
+    <hr>
+
+    <p><strong>Type:</strong> {{ object.type }}</p>
+    <p><strong>Coordinates:</strong> {{ object.ra }}, {{ object.dec }}</p>
+    <p><strong>Magnitude (V):</strong> {{ object.mag }}</p>
+    <p><strong>Distance:</strong> {{ object.distance }}</p>
+
+    <a href="{{ url_for('deep_dive_search') }}">Back to Search</a>
+  </div>
+
+  <div class="image-gallery">
+    {% for image in images %}
+      <div class="image-card">
+        <img src="{{ image.plot }}" alt="{{ image.name }}">
+        <p>{{ image.name }}</p>
+      </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

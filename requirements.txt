@@ -3,7 +3,7 @@ astroplan
 astroquery
 timezonefinder
 matplotlib
-PyQt6
 numpy
 pytz
 requests
+Flask

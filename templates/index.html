@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+
+{% block title %}Home{% endblock %}
+
+{% block body_class %}splash-page{% endblock %}
+
+{% block content %}
+<div class="splash-container">
+  <div class="splash-nav">
+    <a href="{{ url_for('observable') }}" class="splash-link">Sky Query</a>
+    <a href="#" class="splash-link disabled">Survey Images</a>
+    <a href="#" class="splash-link disabled">Spectra</a>
+    <a href="{{ url_for('deep_dive_search') }}" class="splash-link">Image Comparison</a>
+    <a href="#" class="splash-link disabled">Star Cube</a>
+  </div>
+
+  <div class="splash-image">
+    <img src="{{ url_for('static', filename='astroman.png') }}" alt="AstroMan">
+  </div>
+</div>
+{% endblock %}
